@@ -1,2 +1,2 @@
 # nvibt
-nvidia infiniband network management tool
+nvidia infiniband network management tools
