@@ -527,9 +527,9 @@ esac
 
 
 ## full (default) output
-dblsep
-echo "$nd"
-dblsep
+## dblsep
+out_kv "host name" "$nd"
+## dblsep
 out_kv "part number" "$pn"
 out_kv "serial number" "$sn"
 out_kv "product name" "$cn"
