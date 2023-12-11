@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# sudo chmod +x ./ibswinfo.sh
+## sudo chmod +x ./ibswinfo.sh
+## csv_file=$1
 
 #ibswitches |head -1| awk -F'lid' '{print "lid"$2}' |awk '{print $1"-"$2}' | xargs -I {} ./ibswinfo.sh -d {}| grep -Ev "^-|^=" | awk -F'|' '{print $1}' |awk -F'|' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print}' | tr '\n' ',' > "$csv_file"
 
