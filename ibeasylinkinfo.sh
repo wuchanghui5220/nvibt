@@ -1,7 +1,8 @@
 #!/bin/bash
 
-ibnetdiscover -p | sed 's/ HCA/_HCA/g' \
-  | grep -v ??? \
+ibnetdiscover -p \
+  | sed 's/ HCA/_HCA/g' \
+  | grep -v "???" \
   | grep -v "Quantum Mellanox Technologies" \
   | grep ^SW \
   | grep -v "Mellanox Technologies Aggregation Node" \
