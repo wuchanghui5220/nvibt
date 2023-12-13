@@ -3,7 +3,7 @@
 mst restart &>/dev/null
 mst cable add --with_ib  &>/dev/null
 
-cables=$(mst status |grep -E "^CA|^SW" | awk '/Cables:/ {found=1; next} found {print $1}' |grep -v "^-")
+cables=$(mst status |grep -E "^CA|^SW")
 
 echo "Wavelength,Vendor,Serial number,Part number,Temperature [c],Length [m]"
 
