@@ -29,7 +29,7 @@ query_ber_info() {
 # Function to perform smpquery nd and extract node description
 get_node_description() {
     local lid=$1
-    smpquery nd $lid | sed 's/Node Description:*//; s/\.//g' | tr -d '[:space:]'
+    smpquery nd $lid | sed 's/Node Description:*//; s/\.//g'
 }
 
 # Main script
