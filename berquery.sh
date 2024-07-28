@@ -18,10 +18,10 @@ query_ber_info() {
     local device_name=$4
     local switch_name=$5
 
-    echo -e "\nQuerying BER Info for $device_name"
+    echo -e "\n$device_name"
     mlxlink -d $device -c | grep -A10 "BER Info"
 
-    echo -e "\nQuerying BER Info for switch $switch_name port $switch_port (LID: $switch_lid)"
+    echo -e "\n$switch_name port $switch_port (LID: $switch_lid)"
     mlxlink -d lid-$switch_lid -p $switch_port -c | grep -A10 "BER Info"
     echo ""
 }
