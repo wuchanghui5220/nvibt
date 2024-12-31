@@ -132,7 +132,7 @@ lsmod | grep drbd
 
 
 sleep 3
-echo "
+echo ""
 
 # 启用并启动服务
 log "Enabling and starting services..."
