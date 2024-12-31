@@ -123,7 +123,7 @@ log "Loading DRBD kernel module..."
 modprobe drbd || error "Failed to load DRBD module"
 
 sleep 3
-echo "
+echo 
 
 # 验证安装
 log "Verifying installation..."
@@ -132,14 +132,14 @@ lsmod | grep drbd
 
 
 sleep 3
-echo ""
+echo 
 
 # 启用并启动服务
 log "Enabling and starting services..."
 systemctl enable --now pcsd
 
 sleep 3
-echo "
+echo 
 
 log "Installation completed successfully!"
 log "Package archive is available at: $WORK_DIR/drbd_packages.tar.gz"
