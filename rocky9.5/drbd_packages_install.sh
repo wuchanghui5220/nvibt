@@ -96,80 +96,58 @@ dnf download --resolve --alldeps dnf-plugins-core tar gzip
 
 # 安装基础工具
 log "Installing basic tools..."
-rpm -ivh *.rpm
+dnf install -y ./dnf-plugins-core* ./tar* ./gzip*
+
+sleep 5
 
 cd $WORK_DIR
-
-# 创建 DRBD 包目录
-log "Creating directory for DRBD packages..."
-mkdir -p $WORK_DIR/drbd_pkgs
-cd $WORK_DIR/drbd_pkgs
 
 # 下载所需的包
 log "Downloading required packages..."
 dnf download --resolve --alldeps pcs pacemaker corosync resource-agents
 dnf download --resolve --alldeps drbd9x-utils kmod-drbd9x
 
-# 创建最终的打包目录
-log "Creating final package directory..."
-mkdir -p $WORK_DIR/final_pkgs
-cp $WORK_DIR/basic_tools/*.rpm $WORK_DIR/final_pkgs/
-cp $WORK_DIR/drbd_pkgs/*.rpm $WORK_DIR/final_pkgs/
-
 # 创建打包文件
-cd $WORK_DIR
 log "Creating package archive..."
-tar czf drbd_all_packages.tar.gz final_pkgs/
+tar czf drbd_packages.tar.gz *.rpm
 
-# 显示下载的包列表
-log "Downloaded packages:"
-echo "Basic tools:"
-ls -l $WORK_DIR/basic_tools/
-echo "DRBD packages:"
-ls -l $WORK_DIR/drbd_pkgs/
+# 安装所有下载的包
+log "Installing packages..."
+dnf install -y ./*.rpm
 
-log "All packages have been downloaded and archived to: $WORK_DIR/drbd_all_packages.tar.gz"
-
-# 创建安装脚本
-cat > $WORK_DIR/install.sh << 'EOF'
-#!/bin/bash
-
-# 设置错误时退出
-set -e
-
-# 安装所有包
-echo "Installing packages..."
-cd final_pkgs
-rpm -ivh *.rpm
+sleep 3
+echo ""
 
 # 加载 DRBD 模块
-echo "Loading DRBD kernel module..."
-modprobe drbd
+log "Loading DRBD kernel module..."
+modprobe drbd || error "Failed to load DRBD module"
+
+sleep 3
+echo "
+
+# 验证安装
+log "Verifying installation..."
+drbdadm --version
+lsmod | grep drbd
+
+
+sleep 3
+echo "
 
 # 启用并启动服务
-echo "Enabling and starting services..."
+log "Enabling and starting services..."
 systemctl enable --now pcsd
 
-# 显示安装结果
-echo "Installation completed!"
-echo "DRBD Version: $(drbdadm --version | head -n 1)"
-echo "Kernel Module: $(lsmod | grep drbd)"
-echo "PCSD Status: $(systemctl is-active pcsd)"
-EOF
+sleep 3
+echo "
 
-chmod +x $WORK_DIR/install.sh
+log "Installation completed successfully!"
+log "Package archive is available at: $WORK_DIR/drbd_packages.tar.gz"
 
-# 将安装脚本添加到压缩包
-tar -rf drbd_all_packages.tar.gz install.sh
-
-log "Download completed successfully!"
-log "Package archive is available at: $WORK_DIR/drbd_all_packages.tar.gz"
-log "This archive includes all necessary RPMs and an installation script."
-
-# 显示使用说明
+# 显示安装结果摘要
 echo
-echo "=== Usage Instructions ==="
-echo "To install on offline system:"
-echo "1. Copy drbd_all_packages.tar.gz to the target system"
-echo "2. Extract: tar xf drbd_all_packages.tar.gz"
-echo "3. Run: ./install.sh"
+echo "=== Installation Summary ==="
+echo "DRBD Version: $(drbdadm --version | head -n 1)"
+echo "Kernel Module: $(lsmod | grep drbd | awk '{print $1 " (size: " $2 ")"}')"
+echo "PCSD Status: $(systemctl is-active pcsd)"
+echo "Package Archive: $WORK_DIR/drbd_packages.tar.gz"
