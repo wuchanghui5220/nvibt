@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Load Nginx image
-docker load -o nginx.tar
+docker load -i nginx.tar
 
 # Create custom test page directory
 mkdir -p /tmp/nginx-test
