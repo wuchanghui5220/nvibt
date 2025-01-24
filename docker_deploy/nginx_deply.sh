@@ -1,18 +1,22 @@
 #!/bin/bash
 
+# Get Docker and Nginx versions
+DOCKER_VERSION=$(docker version --format '{{.Server.Version}}')
+NGINX_VERSION=$(docker run --rm nginx nginx -v 2>&1 | grep -oP 'nginx/\K[\d.]+')
+
 # Load Nginx image
 docker load -i nginx.tar
 
 # Create custom test page directory
 mkdir -p /tmp/nginx-test
 
-# Generate a stylish test page
+# Generate a stylish test page with version info
 cat > /tmp/nginx-test/index.html << EOF
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Welcome to Nginx Test Page</title>
+    <title>Nginx Test Page</title>
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -33,6 +37,7 @@ cat > /tmp/nginx-test/index.html << EOF
         }
         h1 { font-size: 3rem; margin-bottom: 20px; }
         p { font-size: 1.2rem; }
+        .version { margin-top: 20px; font-size: 1rem; opacity: 0.8; }
     </style>
 </head>
 <body>
@@ -40,6 +45,10 @@ cat > /tmp/nginx-test/index.html << EOF
         <h1>✨ Nginx Test Page ✨</h1>
         <p>Container Successfully Deployed!</p>
         <p>$(date)</p>
+        <div class="version">
+            <p>Docker Version: $DOCKER_VERSION</p>
+            <p>Nginx Version: $NGINX_VERSION</p>
+        </div>
     </div>
 </body>
 </html>
