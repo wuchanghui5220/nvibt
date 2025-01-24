@@ -24,15 +24,15 @@ error_exit() {
 
 # 检查并解压Docker安装包
 deploy_docker() {
-    log "开始部署Docker 27.5.0..."
+    log "开始部署Docker 27.5.1..."
     
     # 检查安装包是否存在
-    if [[ ! -f "docker-27.5.0.tgz" ]]; then
-        error_exit "Docker安装包 docker-27.5.0.tgz 未找到"
+    if [[ ! -f "docker-27.5.1.tgz" ]]; then
+        error_exit "Docker安装包 docker-27.5.1.tgz 未找到"
     fi
 
     # 解压Docker安装包
-    tar -xzf docker-27.5.0.tgz || error_exit "Docker安装包解压失败"
+    tar -xzf docker-27.5.1.tgz || error_exit "Docker安装包解压失败"
     
     # 复制Docker二进制文件
     cp docker/* /usr/local/bin/ || error_exit "复制Docker二进制文件失败"
