@@ -1,3 +1,2 @@
 https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz
-
 https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64
