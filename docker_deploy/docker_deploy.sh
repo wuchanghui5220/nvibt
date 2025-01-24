@@ -115,7 +115,7 @@ main() {
     install_docker_compose
     start_docker_service
 
-    log "Docker 27.5.0 部署成功！"
+    log "Docker 27.5.1 部署成功！"
 }
 
 # 执行主函数
