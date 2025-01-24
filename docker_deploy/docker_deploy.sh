@@ -5,6 +5,14 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# 检查tar命令是否存在
+check_tar_command() {
+    if ! command -v tar &> /dev/null; then
+        echo -e "${RED}错误: tar命令未安装。请先安装tar工具。${NC}" >&2
+        exit 1
+    fi
+}
+
 # 检查是否具有root权限
 if [[ $EUID -ne 0 ]]; then
    echo -e "${RED}此脚本必须以root权限运行${NC}" 
@@ -24,6 +32,9 @@ error_exit() {
 
 # 检查并解压Docker安装包
 deploy_docker() {
+    # 首先检查tar命令
+    check_tar_command
+
     log "开始部署Docker 27.5.1..."
     
     # 检查安装包是否存在
