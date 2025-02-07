@@ -208,13 +208,47 @@ lsblk -d -o NAME,SIZE,TYPE | grep -v "loop" | grep -v "ram" | while read -r line
     get_device_info "$device"
 done
 
+# Network Interface Information
+write_section "Network Interface Information"
+while read -r line; do
+    if [[ $line =~ Ethernet ]]; then
+        pci_addr=$(echo "$line" | cut -d' ' -f1)
+        nic_info=$(echo "$line" | sed 's/^[^ ]* //')
+        write_info "PCI Address" "$pci_addr"
+        write_info "Controller" "$nic_info"
+        
+        # Get Part Number and Serial Number
+        while IFS= read -r detail; do
+            if [[ $detail =~ "Part number" ]]; then
+                write_info "Part Number" "$(echo "$detail" | sed -n 's/.*Part number\: *//p' | xargs)"
+            elif [[ $detail =~ "Serial number" ]]; then
+                write_info "Serial Number" "$(echo "$detail" | sed -n 's/.*Serial number\: *//p' | xargs)"
+            fi
+        done < <(lspci -s "$pci_addr" -vvxx | grep -E -i "serial number:|part number")
+        echo "----------------------------------------" >> "$output_file"
+    fi
+done < <(lspci | grep -i Ethernet)
+
 # Mellanox Information
 write_section "Mellanox Information"
-for dev in $(lspci | grep Mellanox | cut -d' ' -f1); do
-    while IFS= read -r line; do
-        [[ $line =~ (PN|SN) ]] && write_info "$dev" "$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/ *$//')"
-    done < <(lspci -xxxvvv -s "$dev" | grep -E 'PN|SN')
-done
+while read -r line; do
+    if [[ $line =~ Mellanox ]]; then
+        pci_addr=$(echo "$line" | cut -d' ' -f1)
+        nic_info=$(echo "$line" | sed 's/^[^ ]* //')
+        write_info "PCI Address" "$pci_addr"
+        write_info "Controller" "$nic_info"
+        
+        # Get Part Number and Serial Number
+        while IFS= read -r detail; do
+            if [[ $detail =~ "PN" ]]; then
+                write_info "Part Number" "$(echo "$detail" | sed 's/.*\[PN\]//' | xargs)"
+            elif [[ $detail =~ "SN" ]]; then
+                write_info "Serial Number" "$(echo "$detail" | sed 's/.*\[SN\]//' | xargs)"
+            fi
+        done < <(lspci -xxxvvv -s "$pci_addr" | grep -E 'PN|SN')
+        echo "----------------------------------------" >> "$output_file"
+    fi
+done < <(lspci | grep Mellanox)
 
 # GPU Information
 write_section "GPU Information"
