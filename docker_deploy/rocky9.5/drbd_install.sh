@@ -99,7 +99,7 @@ EOF
 # 下载包
 download_packages() {
     log "Creating work directory..."
-    WORK_DIR=~/drbd_packages
+    WORK_DIR=$HOME/drbd_packages
     mkdir -p $WORK_DIR
     cd $WORK_DIR
 
@@ -132,7 +132,7 @@ install_packages() {
     # 检查文件是否存在
     if [ ! -f "$package_file" ]; then
         error "Package file not found: $package_file"
-    }
+    fi
     
     # 创建临时工作目录
     local temp_dir=$(mktemp -d)
@@ -190,7 +190,6 @@ show_summary() {
 }
 
 # 主程序
-# 修改主程序
 main() {
     check_root
 
@@ -208,14 +207,13 @@ main() {
         "all"|"")
             setup_repos
             download_packages
-            install_packages "~/drbd_packages/drbd_packages.tar.gz"
+            install_packages "$HOME/drbd_packages/drbd_packages.tar.gz"
             ;;
         *)
             usage
             ;;
     esac
 }
-
 
 # 执行主程序
 main "$@"
