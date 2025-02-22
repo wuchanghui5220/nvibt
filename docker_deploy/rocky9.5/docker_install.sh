@@ -25,9 +25,9 @@ download_packages() {
 
     # 下载 Docker 二进制文件（使用阿里云镜像）
     log_info "下载 Docker 二进制文件..."
-    wget https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/docker-24.0.7.tgz || {
+    wget https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/docker-23.0.6.tgz || {
         log_error "Docker 下载失败，尝试备用链接..."
-        wget https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/x86_64/docker-24.0.7.tgz || {
+        wget https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/x86_64/docker-23.0.6.tgz || {
             log_error "Docker 下载失败"
             exit 1
         }
