@@ -10,22 +10,42 @@ log_info() {
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
+
+# Docker 版本
+DOCKER_VERSION="23.0.6"
+DOCKER_TGZ="docker-${DOCKER_VERSION}.tgz"
+
 # 下载函数
 download_packages() {
     # 安装必要工具
     dnf install -y tar wget curl
-    # 创建工作目录
-    mkdir -p docker-files
-    cd docker-files
-    # 下载 Docker 二进制文件（使用阿里云镜像）
-    log_info "下载 Docker 二进制文件..."
-    wget https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/docker-23.0.6.tgz || {
-        log_error "Docker 下载失败，尝试备用链接..."
-        wget https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/x86_64/docker-23.0.6.tgz || {
-            log_error "Docker 下载失败"
-            exit 1
+    
+    # 检查当前目录是否已存在 Docker tgz 包
+    if [ -f "${DOCKER_TGZ}" ]; then
+        log_info "检测到当前目录已存在 ${DOCKER_TGZ}，跳过下载步骤..."
+        mkdir -p docker-files
+        cp ${DOCKER_TGZ} docker-files/
+    else
+        # 创建工作目录
+        mkdir -p docker-files
+        cd docker-files
+        
+        # 下载 Docker 二进制文件（使用阿里云镜像）
+        log_info "下载 Docker 二进制文件..."
+        wget https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/${DOCKER_TGZ} || {
+            log_error "Docker 下载失败，尝试备用链接..."
+            wget https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/x86_64/${DOCKER_TGZ} || {
+                log_error "Docker 下载失败"
+                exit 1
+            }
         }
-    }
+        
+        cd ..
+    fi
+    
+    # 进入工作目录
+    cd docker-files
+    
     # 创建 systemd 服务文件
     log_info "创建服务文件..."
     cat > docker.service << 'EOF'
@@ -164,5 +184,6 @@ case "$1" in
         echo "  下载安装包：         $0 download   # 仅下载离线安装包"
         echo "  离线安装：           $0 install    # 使用已下载的安装包安装"
         echo "  在线下载并安装：     $0 all        # 一键下载并安装"
+        echo "注意：如果当前目录存在 docker-${DOCKER_VERSION}.tgz 文件，将直接使用该文件而不重新下载"
         ;;
 esac
