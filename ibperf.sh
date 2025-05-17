@@ -159,19 +159,17 @@ if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]]; then
     fi
 fi
 
+# 存储测试结果的数组
+declare -a LAT_RESULTS
+declare -a BW_RESULTS
+
 # 初始化摘要文件
 {
-    echo "╔══════════════════════════════════════════════════════════════════════╗"
-    echo "║                    InfiniBand 性能测试结果摘要                       ║"
-    echo "║                      $(date +"%Y-%m-%d %H:%M:%S")                         ║"
-    echo "╚══════════════════════════════════════════════════════════════════════╝"
+    echo "╔════════════════════════════════════════════════════════════════════════╗"
+    echo "║                    InfiniBand 性能测试结果摘要                         ║"
+    echo "║                      $(date +"%Y-%m-%d %H:%M:%S")                       ║"
+    echo "╚════════════════════════════════════════════════════════════════════════╝"
     echo ""
-    
-    if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
-        echo "┌─────────────────────────────────── 延迟测试结果 ───────────────────────────────────┐"
-        echo "│ 源主机          目标主机        HCA     大小(B)  最小(us)  最大(us)  平均(us)  标准差  │"
-        echo "├──────────────────────────────────────────────────────────────────────────────────┤"
-    fi
 } > "$SUMMARY_TXT"
 
 # 测试SSH连接
@@ -238,9 +236,8 @@ run_latency_test() {
             printf "%-10s %-15s %-16s %-15s %-16s %-15s\n" "$size" "$ITERATIONS" "$min_lat" "$max_lat" "$avg_lat" "$stdev"
             echo "---------------------------------------------------------------------------------------"
             
-            # 添加到摘要文件
-            printf "│ %-15s %-15s %-7s %8s %9.2f %9.2f %9.2f %8.2f │\n" \
-                "$src" "$dest" "$hca" "$size" "$min_lat" "$max_lat" "$avg_lat" "$stdev" >> "$SUMMARY_TXT"
+            # 添加到延迟结果数组
+            LAT_RESULTS+=("$src|$dest|$hca|$size|$min_lat|$max_lat|$avg_lat|$stdev")
             
             # 添加到CSV摘要
             if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
@@ -312,14 +309,11 @@ run_bandwidth_test() {
     
     # 解析带宽测试结果 - 直接在日志文件中搜索数据行
     if [ -f "$log_file" ]; then
-        # 使用精确的搜索找到带宽结果行 - 关键点是搜索处理过的日志
-        # 首先找到包含"#bytes"和"BW peak"的行后面的数字行
-        local result_line=$(cat "$log_file" | grep -A2 "#bytes.*BW peak" | grep -E "^[[:space:]]*$size")
+        # 使用精确的搜索找到带宽结果行
+        local result_line=$(cat "$log_file" | grep -A2 "#bytes.*BW peak" | grep -E "^[[:space:]]*$size" | tail -1)
         
         if [ -n "$result_line" ]; then
             # 使用awk提取需要的字段
-            local size_col=$(echo "$result_line" | awk '{print $1}')
-            local iter_col=$(echo "$result_line" | awk '{print $2}')
             local bw_peak=$(echo "$result_line" | awk '{print $3}')
             local bw_avg=$(echo "$result_line" | awk '{print $4}')
             local msg_rate=$(echo "$result_line" | awk '{print $5}')
@@ -331,20 +325,11 @@ run_bandwidth_test() {
             echo "$result_line"
             echo "---------------------------------------------------------------------------------------"
             
-            # 在摘要中添加带宽结果
-            if [[ "$TEST_TYPE" == "all" ]] && [[ $(grep -c "带宽测试结果" "$SUMMARY_TXT") -eq 0 ]]; then
-                echo "" >> "$SUMMARY_TXT"
-                echo "┌─────────────────────────────────── 带宽测试结果 ───────────────────────────────────┐" >> "$SUMMARY_TXT"
-                echo "│ 源主机          目标主机        HCA     大小(MB)  峰值(Gbps)  平均(Gbps)  消息率(Mpps) │" >> "$SUMMARY_TXT"
-                echo "├──────────────────────────────────────────────────────────────────────────────────┤" >> "$SUMMARY_TXT"
-            fi
-            
             # 计算MB大小进行显示
             local size_mb=$(echo "scale=2; $size/1048576" | bc)
             
-            # 添加到摘要文件
-            printf "│ %-15s %-15s %-7s %8.2f %11.2f %11.2f %13s │\n" \
-                "$src" "$dest" "$hca" "$size_mb" "$bw_peak" "$bw_avg" "$msg_rate" >> "$SUMMARY_TXT"
+            # 添加到带宽结果数组
+            BW_RESULTS+=("$src|$dest|$hca|$size_mb|$bw_peak|$bw_avg|$msg_rate")
             
             # 添加到CSV摘要
             if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
@@ -374,7 +359,7 @@ EOF
             return 0
         else
             # 如果找不到精确匹配，尝试使用更宽松的匹配，只获取数字行
-            local any_num_line=$(cat "$log_file" | grep -A10 "#bytes.*BW peak" | grep -E "^[[:space:]]*[0-9]+" | head -1)
+            local any_num_line=$(cat "$log_file" | grep -A10 "#bytes.*BW peak" | grep -E "^[[:space:]]*[0-9]+" | tail -1)
             
             if [ -n "$any_num_line" ]; then
                 # 解析这个行
@@ -388,20 +373,11 @@ EOF
                 echo "$any_num_line"
                 echo "---------------------------------------------------------------------------------------"
                 
-                # 在摘要中添加带宽结果
-                if [[ "$TEST_TYPE" == "all" ]] && [[ $(grep -c "带宽测试结果" "$SUMMARY_TXT") -eq 0 ]]; then
-                    echo "" >> "$SUMMARY_TXT"
-                    echo "┌─────────────────────────────────── 带宽测试结果 ───────────────────────────────────┐" >> "$SUMMARY_TXT"
-                    echo "│ 源主机          目标主机        HCA     大小(MB)  峰值(Gbps)  平均(Gbps)  消息率(Mpps) │" >> "$SUMMARY_TXT"
-                    echo "├──────────────────────────────────────────────────────────────────────────────────┤" >> "$SUMMARY_TXT"
-                fi
-                
                 # 计算MB大小
                 local size_mb=$(echo "scale=2; $size/1048576" | bc)
                 
-                # 添加到摘要文件
-                printf "│ %-15s %-15s %-7s %8.2f %11.2f %11.2f %13s │\n" \
-                    "$src" "$dest" "$hca" "$size_mb" "$bw_peak" "$bw_avg" "$msg_rate" >> "$SUMMARY_TXT"
+                # 添加到带宽结果数组
+                BW_RESULTS+=("$src|$dest|$hca|$size_mb|$bw_peak|$bw_avg|$msg_rate")
                 
                 # 添加到CSV摘要
                 if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
@@ -430,75 +406,57 @@ EOF
                 
                 return 0
             else
-                # 最后尝试，直接搜索日志中任何包含数字的行
-                local last_resort=$(cat "$log_file" | grep -E "^[[:space:]]*[0-9]+" | tail -1)
-                
-                if [ -n "$last_resort" ]; then
-                    local bw_peak=$(echo "$last_resort" | awk '{print $3}')
-                    local bw_avg=$(echo "$last_resort" | awk '{print $4}')
-                    local msg_rate=$(echo "$last_resort" | awk '{print $5}')
-                    
-                    echo -e "${GREEN}[结果]${NC} 带宽测试 (${src} -> ${dest}, ${hca}):"
-                    echo "---------------------------------------------------------------------------------------"
-                    echo "#bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]"
-                    echo "$last_resort"
-                    echo "---------------------------------------------------------------------------------------"
-                    
-                    # 在摘要中添加带宽结果
-                    if [[ "$TEST_TYPE" == "all" ]] && [[ $(grep -c "带宽测试结果" "$SUMMARY_TXT") -eq 0 ]]; then
-                        echo "" >> "$SUMMARY_TXT"
-                        echo "┌─────────────────────────────────── 带宽测试结果 ───────────────────────────────────┐" >> "$SUMMARY_TXT"
-                        echo "│ 源主机          目标主机        HCA     大小(MB)  峰值(Gbps)  平均(Gbps)  消息率(Mpps) │" >> "$SUMMARY_TXT"
-                        echo "├──────────────────────────────────────────────────────────────────────────────────┤" >> "$SUMMARY_TXT"
-                    fi
-                    
-                    # 计算MB大小
-                    local size_mb=$(echo "scale=2; $size/1048576" | bc)
-                    
-                    # 添加到摘要文件
-                    printf "│ %-15s %-15s %-7s %8.2f %11.2f %11.2f %13s │\n" \
-                        "$src" "$dest" "$hca" "$size_mb" "$bw_peak" "$bw_avg" "$msg_rate" >> "$SUMMARY_TXT"
-                    
-                    # 添加到CSV摘要
-                    if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
-                        echo "$src,$dest,$hca,$size,$bw_peak,$bw_avg,$msg_rate" >> "$BW_CSV"
-                    fi
-                    
-                    # 添加到JSON摘要
-                    if [[ "$OUTPUT_FORMAT" == "json" || "$OUTPUT_FORMAT" == "all" ]]; then
-                        if [ "$json_first" == "true" ]; then
-                            json_first=false
-                        else
-                            echo "," >> "$BW_JSON"
-                        fi
-                        cat >> "$BW_JSON" << EOF
-    {
-        "source": "$src",
-        "destination": "$dest",
-        "hca": "$hca",
-        "message_size": $size,
-        "bw_peak_gbps": $bw_peak,
-        "bw_avg_gbps": $bw_avg,
-        "message_rate_mpps": $msg_rate
-    }
-EOF
-                    fi
-                    
-                    return 0
-                else
-                    # 实在找不到任何结果，写入日志但不显示错误
-                    echo "无法从带宽测试日志中提取结果: $log_file" >> "$MAIN_LOG"
-                    # 把日志内容输出到屏幕下，便于调试
-                    echo "日志内容（最后20行）:"
-                    tail -20 "$log_file"
-                    return 1
-                fi
+                # 实在找不到任何结果，将错误写入日志
+                echo "无法从带宽测试日志中提取结果: $log_file" >> "$MAIN_LOG"
+                return 1
             fi
         fi
     else
         echo -e "${RED}[错误]${NC} 日志文件 $log_file 不存在"
         return 1
     fi
+}
+
+# 生成摘要报告
+generate_summary() {
+    # 打印延迟测试结果表格
+    if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]] && [ ${#LAT_RESULTS[@]} -gt 0 ]; then
+        {
+            echo "┌─────────────────────────────── 延迟测试结果 ─────────────────────────────────┐"
+            echo "│ 源主机          目标主机        HCA     大小(B)  最小(us)  最大(us)  平均(us)  标准差 │"
+            echo "├──────────────────────────────────────────────────────────────────────────────┤"
+            
+            for result in "${LAT_RESULTS[@]}"; do
+                IFS='|' read -r src dest hca size min_lat max_lat avg_lat stdev <<< "$result"
+                printf "│ %-15s %-15s %-7s %8s %9.2f %9.2f %9.2f %8.2f │\n" \
+                    "$src" "$dest" "$hca" "$size" "$min_lat" "$max_lat" "$avg_lat" "$stdev"
+            done
+            
+            echo "└──────────────────────────────────────────────────────────────────────────────┘"
+        } >> "$SUMMARY_TXT"
+    fi
+    
+    # 打印带宽测试结果表格
+    if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]] && [ ${#BW_RESULTS[@]} -gt 0 ]; then
+        {
+            echo ""
+            echo "┌─────────────────────────────── 带宽测试结果 ─────────────────────────────────┐"
+            echo "│ 源主机          目标主机        HCA     大小(MB)  峰值(Gbps)  平均(Gbps)  消息率(Mpps) │"
+            echo "├──────────────────────────────────────────────────────────────────────────────┤"
+            
+            for result in "${BW_RESULTS[@]}"; do
+                IFS='|' read -r src dest hca size_mb bw_peak bw_avg msg_rate <<< "$result"
+                printf "│ %-15s %-15s %-7s %8s %11.2f %11.2f %13s │\n" \
+                    "$src" "$dest" "$hca" "$size_mb" "$bw_peak" "$bw_avg" "$msg_rate"
+            done
+            
+            echo "└──────────────────────────────────────────────────────────────────────────────┘"
+        } >> "$SUMMARY_TXT"
+    fi
+    
+    # 添加测试完成时间
+    echo "" >> "$SUMMARY_TXT"
+    echo "测试完成时间: $(date +"%Y-%m-%d %H:%M:%S")" >> "$SUMMARY_TXT"
 }
 
 # 主测试函数
@@ -578,19 +536,8 @@ run_tests() {
             done
         done
         
-        # 完成摘要表格
-        {
-            if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
-                echo "└──────────────────────────────────────────────────────────────────────────────────┘"
-            fi
-            
-            if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]]; then
-                echo "└──────────────────────────────────────────────────────────────────────────────────┘"
-            fi
-            
-            echo ""
-            echo "测试完成时间: $(date +"%Y-%m-%d %H:%M:%S")"
-        } >> "$SUMMARY_TXT"
+        # 生成摘要报告
+        generate_summary
         
         echo -e "\n${GREEN}[完成]${NC} 所有测试完成。结果保存在 $LOG_DIR 目录中"
         echo -e "${BOLD}摘要报告:${NC} $SUMMARY_TXT"
