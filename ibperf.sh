@@ -12,6 +12,7 @@ BW_SIZE="2097152"  # 默认带宽测试大小为2MB
 ITERATIONS=5000
 OUTPUT_FORMAT="human"  # 可选: human, csv, json
 TEST_TYPE="all"  # 可选: latency, bandwidth, all
+CROSS_HCA_TEST=false   # 默认不启用交叉测试
 
 # 终端颜色定义
 RED='\033[0;31m'
@@ -34,6 +35,7 @@ show_help() {
     echo "  --iterations N            每次测试的迭代次数 (默认: 5000)"
     echo "  --output FORMAT           输出格式: human, csv, json, all (默认: human)"
     echo "  --test_type TYPE          测试类型: latency, bandwidth, all (默认: all)"
+    echo "  --cross_hca               启用交叉HCA测试 (默认: 不启用)"
     echo "  --help                    显示此帮助信息"
     exit 0
 }
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
             TEST_TYPE="$2"
             shift 2
             ;;
+        --cross_hca)
+            CROSS_HCA_TEST=true
+            shift
+            ;;
         --help)
             show_help
             ;;
@@ -111,12 +117,19 @@ ssh_cmd() {
 # 将HCA_LIST转换为数组
 IFS=',' read -ra HCAS <<< "$HCA_LIST"
 
-# 读取主机文件并验证主机数量
-HOSTS=($(cat "$HOST_FILE"))
+# 读取主机文件并过滤掉注释行
+HOSTS=()
+while IFS= read -r line; do
+    # 跳过空行和注释行
+    if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
+        HOSTS+=("$line")
+    fi
+done < "$HOST_FILE"
+
 HOST_COUNT=${#HOSTS[@]}
 
 if [ $HOST_COUNT -lt 2 ]; then
-    echo -e "${RED}错误:${NC} 主机文件必须至少包含两个主机"
+    echo -e "${RED}错误:${NC} 主机文件必须至少包含两个主机（去除注释行后）"
     exit 1
 fi
 
@@ -141,7 +154,7 @@ BW_JSON="$LOG_DIR/bandwidth_summary.json"
 # 初始化CSV和JSON文件
 if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
     if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
-        echo "源主机,目标主机,HCA,消息大小(B),最小延迟(us),最大延迟(us),平均延迟(us),标准差" > "$LAT_CSV"
+        echo "源主机,目标主机,源HCA,目标HCA,消息大小(B),最小延迟(us),最大延迟(us),平均延迟(us),标准差" > "$LAT_CSV"
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" || "$OUTPUT_FORMAT" == "all" ]]; then
@@ -151,7 +164,7 @@ fi
 
 if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]]; then
     if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
-        echo "源主机,目标主机,HCA,消息大小(B),BW峰值(Gbps),BW平均值(Gbps),消息率(Mpps)" > "$BW_CSV"
+        echo "源主机,目标主机,源HCA,目标HCA,消息大小(B),BW峰值(Gbps),BW平均值(Gbps),消息率(Mpps)" > "$BW_CSV"
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" || "$OUTPUT_FORMAT" == "all" ]]; then
@@ -191,28 +204,29 @@ test_ssh_connection() {
 run_latency_test() {
     local src="$1"
     local dest="$2"
-    local hca="$3"
-    local port="$4"
-    local size="$5"
-    local test_port="$6"
-    local log_file="$7"
-    local json_first="$8"
+    local src_hca="$3"
+    local dest_hca="$4"
+    local port="$5"
+    local size="$6"
+    local test_port="$7"
+    local log_file="$8"
+    local json_first="$9"
 
     # 设置测试参数
-    local hca_flags="-d $hca -i $port"
-    local lat_flags="$hca_flags -s $size -n $ITERATIONS -F -p $test_port"
+    local src_hca_flags="-d $src_hca -i $port"
+    local dest_hca_flags="-d $dest_hca -i $port"
 
-    echo -e "${BLUE}[测试]${NC} 运行延迟测试 (消息大小: $size 字节, 端口: $test_port)"
+    echo -e "${BLUE}[测试]${NC} 运行延迟测试 (${src}:${src_hca} -> ${dest}:${dest_hca}, 消息大小: $size 字节, 端口: $test_port)"
 
     # 在服务器端启动测试
-    ssh_cmd "$src" "ib_write_lat $lat_flags" > "$log_file" 2>&1 &
+    ssh_cmd "$src" "ib_write_lat $src_hca_flags -s $size -n $ITERATIONS -F -p $test_port" > "$log_file" 2>&1 &
     local server_pid=$!
 
     # 给服务器一些时间来启动
     sleep 2
 
     # 在客户端启动测试
-    ssh_cmd "$dest" "ib_write_lat $lat_flags $src" >> "$log_file" 2>&1
+    ssh_cmd "$dest" "ib_write_lat $dest_hca_flags -s $size -n $ITERATIONS -F -p $test_port $src" >> "$log_file" 2>&1
 
     # 等待服务器进程完成
     wait $server_pid
@@ -230,18 +244,18 @@ run_latency_test() {
             local stdev=$(echo "$client_results" | awk '{print $7}')
 
             # 格式化输出结果 - 使用与带宽测试类似的表格形式
-            echo -e "${GREEN}[结果]${NC} 延迟测试 (${src} -> ${dest}, ${hca}):"
+            echo -e "${GREEN}[结果]${NC} 延迟测试 (${src}:${src_hca} -> ${dest}:${dest_hca}):"
             echo "---------------------------------------------------------------------------------------"
             echo "#bytes     #iterations    t_min[usec]      t_max[usec]    t_avg[usec]      t_stdev[usec]"
             printf "%-10s %-15s %-16s %-15s %-16s %-15s\n" "$size" "$ITERATIONS" "$min_lat" "$max_lat" "$avg_lat" "$stdev"
             echo "---------------------------------------------------------------------------------------"
 
             # 添加到延迟结果数组
-            LAT_RESULTS+=("$src|$dest|$hca|$size|$min_lat|$max_lat|$avg_lat|$stdev")
+            LAT_RESULTS+=("$src|$dest|$src_hca|$dest_hca|$size|$min_lat|$max_lat|$avg_lat|$stdev")
 
             # 添加到CSV摘要
             if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
-                echo "$src,$dest,$hca,$size,$min_lat,$max_lat,$avg_lat,$stdev" >> "$LAT_CSV"
+                echo "$src,$dest,$src_hca,$dest_hca,$size,$min_lat,$max_lat,$avg_lat,$stdev" >> "$LAT_CSV"
             fi
 
             # 添加到JSON摘要
@@ -255,7 +269,8 @@ run_latency_test() {
     {
         "source": "$src",
         "destination": "$dest",
-        "hca": "$hca",
+        "source_hca": "$src_hca",
+        "destination_hca": "$dest_hca",
         "message_size": $size,
         "min_latency": $min_lat,
         "max_latency": $max_lat,
@@ -281,28 +296,29 @@ EOF
 run_bandwidth_test() {
     local src="$1"
     local dest="$2"
-    local hca="$3"
-    local port="$4"
-    local size="$5"
-    local test_port="$6"
-    local log_file="$7"
-    local json_first="$8"
+    local src_hca="$3"
+    local dest_hca="$4"
+    local port="$5"
+    local size="$6"
+    local test_port="$7"
+    local log_file="$8"
+    local json_first="$9"
 
     # 设置测试参数
-    local hca_flags="-d $hca -i $port"
-    local bw_flags="$hca_flags -s $size -n $ITERATIONS --report_gbits -F -p $test_port"
+    local src_hca_flags="-d $src_hca -i $port"
+    local dest_hca_flags="-d $dest_hca -i $port"
 
-    echo -e "${BLUE}[测试]${NC} 运行带宽测试 (消息大小: $size 字节, 端口: $test_port)"
+    echo -e "${BLUE}[测试]${NC} 运行带宽测试 (${src}:${src_hca} -> ${dest}:${dest_hca}, 消息大小: $size 字节, 端口: $test_port)"
 
     # 在服务器端启动测试
-    ssh_cmd "$src" "ib_write_bw $bw_flags" > "$log_file" 2>&1 &
+    ssh_cmd "$src" "ib_write_bw $src_hca_flags -s $size -n $ITERATIONS --report_gbits -F -p $test_port" > "$log_file" 2>&1 &
     local server_pid=$!
 
     # 给服务器一些时间来启动
     sleep 2
 
     # 在客户端启动测试
-    ssh_cmd "$dest" "ib_write_bw $bw_flags $src" >> "$log_file" 2>&1
+    ssh_cmd "$dest" "ib_write_bw $dest_hca_flags -s $size -n $ITERATIONS --report_gbits -F -p $test_port $src" >> "$log_file" 2>&1
 
     # 等待服务器进程完成
     wait $server_pid
@@ -319,7 +335,7 @@ run_bandwidth_test() {
             local msg_rate=$(echo "$result_line" | awk '{print $5}')
 
             # 输出带宽测试结果表格
-            echo -e "${GREEN}[结果]${NC} 带宽测试 (${src} -> ${dest}, ${hca}):"
+            echo -e "${GREEN}[结果]${NC} 带宽测试 (${src}:${src_hca} -> ${dest}:${dest_hca}):"
             echo "---------------------------------------------------------------------------------------"
             echo "#bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]"
             echo "$result_line"
@@ -329,11 +345,11 @@ run_bandwidth_test() {
             local size_mb=$(echo "scale=2; $size/1048576" | bc)
 
             # 添加到带宽结果数组
-            BW_RESULTS+=("$src|$dest|$hca|$size_mb|$bw_peak|$bw_avg|$msg_rate")
+            BW_RESULTS+=("$src|$dest|$src_hca|$dest_hca|$size_mb|$bw_peak|$bw_avg|$msg_rate")
 
             # 添加到CSV摘要
             if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
-                echo "$src,$dest,$hca,$size,$bw_peak,$bw_avg,$msg_rate" >> "$BW_CSV"
+                echo "$src,$dest,$src_hca,$dest_hca,$size,$bw_peak,$bw_avg,$msg_rate" >> "$BW_CSV"
             fi
 
             # 添加到JSON摘要
@@ -347,7 +363,8 @@ run_bandwidth_test() {
     {
         "source": "$src",
         "destination": "$dest",
-        "hca": "$hca",
+        "source_hca": "$src_hca",
+        "destination_hca": "$dest_hca",
         "message_size": $size,
         "bw_peak_gbps": $bw_peak,
         "bw_avg_gbps": $bw_avg,
@@ -367,7 +384,7 @@ EOF
                 local bw_avg=$(echo "$any_num_line" | awk '{print $4}')
                 local msg_rate=$(echo "$any_num_line" | awk '{print $5}')
 
-                echo -e "${GREEN}[结果]${NC} 带宽测试 (${src} -> ${dest}, ${hca}):"
+                echo -e "${GREEN}[结果]${NC} 带宽测试 (${src}:${src_hca} -> ${dest}:${dest_hca}):"
                 echo "---------------------------------------------------------------------------------------"
                 echo "#bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]"
                 echo "$any_num_line"
@@ -377,11 +394,11 @@ EOF
                 local size_mb=$(echo "scale=2; $size/1048576" | bc)
 
                 # 添加到带宽结果数组
-                BW_RESULTS+=("$src|$dest|$hca|$size_mb|$bw_peak|$bw_avg|$msg_rate")
+                BW_RESULTS+=("$src|$dest|$src_hca|$dest_hca|$size_mb|$bw_peak|$bw_avg|$msg_rate")
 
                 # 添加到CSV摘要
                 if [[ "$OUTPUT_FORMAT" == "csv" || "$OUTPUT_FORMAT" == "all" ]]; then
-                    echo "$src,$dest,$hca,$size,$bw_peak,$bw_avg,$msg_rate" >> "$BW_CSV"
+                    echo "$src,$dest,$src_hca,$dest_hca,$size,$bw_peak,$bw_avg,$msg_rate" >> "$BW_CSV"
                 fi
 
                 # 添加到JSON摘要
@@ -395,7 +412,8 @@ EOF
     {
         "source": "$src",
         "destination": "$dest",
-        "hca": "$hca",
+        "source_hca": "$src_hca",
+        "destination_hca": "$dest_hca",
         "message_size": $size,
         "bw_peak_gbps": $bw_peak,
         "bw_avg_gbps": $bw_avg,
@@ -422,17 +440,17 @@ generate_summary() {
     # 打印延迟测试结果表格
     if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]] && [ ${#LAT_RESULTS[@]} -gt 0 ]; then
         {
-            echo "┌──────────────────────────────────── 延迟测试结果 ───────────────────────────────────────┐"
-            echo "│ 源主机          目标主机        HCA       大小(B)  最小(us)  最大(us)  平均(us)  标准差 │"
-            echo "├─────────────────────────────────────────────────────────────────────────────────────────┤"
+            echo "┌───────────────────────────────────── 延迟测试结果 ──────────────────────────────────────────┐"
+            echo "│ 源主机        目标主机       源HCA  目标HCA  大小(B)  最小(us)  最大(us)  平均(us)   标准差 │"
+            echo "├─────────────────────────────────────────────────────────────────────────────────────────────┤"
 
             for result in "${LAT_RESULTS[@]}"; do
-                IFS='|' read -r src dest hca size min_lat max_lat avg_lat stdev <<< "$result"
-                printf "│ %-15s %-15s %-7s %8s %9.2f %9.2f %9.2f %8.2f │\n" \
-                    "$src" "$dest" "$hca" "$size" "$min_lat" "$max_lat" "$avg_lat" "$stdev"
+                IFS='|' read -r src dest src_hca dest_hca size min_lat max_lat avg_lat stdev <<< "$result"
+                printf "│ %-13s %-13s %-7s %-7s %8s %9.2f %9.2f %9.2f %8.2f │\n" \
+                    "$src" "$dest" "$src_hca" "$dest_hca" "$size" "$min_lat" "$max_lat" "$avg_lat" "$stdev"
             done
 
-            echo "└─────────────────────────────────────────────────────────────────────────────────────────┘"
+            echo "└─────────────────────────────────────────────────────────────────────────────────────────────┘"
         } >> "$SUMMARY_TXT"
     fi
 
@@ -440,17 +458,17 @@ generate_summary() {
     if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]] && [ ${#BW_RESULTS[@]} -gt 0 ]; then
         {
             echo ""
-            echo "┌──────────────────────────────────── 带宽测试结果 ───────────────────────────────────────┐"
-            echo "│ 源主机          目标主机        HCA     大小(MB)  峰值(Gbps)  平均(Gbps)  消息率(Mpps)  │"
-            echo "├─────────────────────────────────────────────────────────────────────────────────────────┤"
+            echo "┌───────────────────────────────────── 带宽测试结果 ──────────────────────────────────────────┐"
+            echo "│ 源主机        目标主机       源HCA  目标HCA  大小(MB)  峰值(Gbps)  平均(Gbps)  消息率(Mpps) │"
+            echo "├─────────────────────────────────────────────────────────────────────────────────────────────┤"
 
             for result in "${BW_RESULTS[@]}"; do
-                IFS='|' read -r src dest hca size_mb bw_peak bw_avg msg_rate <<< "$result"
-                printf "│ %-15s %-15s %-7s %8s %11.2f %11.2f %13s  │\n" \
-                    "$src" "$dest" "$hca" "$size_mb" "$bw_peak" "$bw_avg" "$msg_rate"
+                IFS='|' read -r src dest src_hca dest_hca size_mb bw_peak bw_avg msg_rate <<< "$result"
+                printf "│ %-13s %-13s %-7s %-7s %8s %11.2f %11.2f %13s  │\n" \
+                    "$src" "$dest" "$src_hca" "$dest_hca" "$size_mb" "$bw_peak" "$bw_avg" "$msg_rate"
             done
 
-            echo "└─────────────────────────────────────────────────────────────────────────────────────────┘"
+            echo "└─────────────────────────────────────────────────────────────────────────────────────────────┘"
         } >> "$SUMMARY_TXT"
     fi
 
@@ -475,6 +493,7 @@ run_tests() {
         echo "  每次测试的迭代次数: $ITERATIONS"
         echo "  测试类型: $TEST_TYPE"
         echo "  输出格式: $OUTPUT_FORMAT"
+        echo "  交叉HCA测试: $([ "$CROSS_HCA_TEST" == "true" ] && echo "启用" || echo "不启用")"
         echo "========================================="
 
         # 循环遍历主机对
@@ -495,45 +514,87 @@ run_tests() {
                 continue
             fi
 
-            # 循环遍历每个HCA
-            for HCA in "${HCAS[@]}"; do
-                PORT=1  # 假设所有网卡使用端口1
-                BASE_PORT=18515
+            # 设置基本端口
+            BASE_PORT=18515
+            PORT=1  # 假设所有网卡使用端口1
 
-                echo -e "\n${BOLD}[HCA]${NC} 测试 $HCA 网卡 (端口 $PORT)"
+            # 交叉HCA测试
+            if [ "$CROSS_HCA_TEST" == "true" ]; then
+                # 对于每个源HCA
+                for SRC_HCA in "${HCAS[@]}"; do
+                    # 对于每个目标HCA
+                    for DEST_HCA in "${HCAS[@]}"; do
+                        echo -e "\n${BOLD}[HCA交叉测试]${NC} 测试 $SRC:$SRC_HCA -> $DEST:$DEST_HCA"
 
-                # 延迟测试 - 只使用指定的大小
-                if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
-                    # 为每个HCA使用不同的端口以避免冲突
-                    LAT_TEST_PORT=$((BASE_PORT + 10))
+                        # 延迟测试 - 只使用指定的大小
+                        if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
+                            # 为每个HCA对使用不同的端口以避免冲突
+                            LAT_TEST_PORT=$((BASE_PORT + 10))
 
-                    LAT_LOG="$LOG_DIR/lat_${SRC}_${DEST}_${HCA}_size${LAT_SIZE}.log"
-                    run_latency_test "$SRC" "$DEST" "$HCA" "$PORT" "$LAT_SIZE" "$LAT_TEST_PORT" "$LAT_LOG" "$lat_json_first"
-                    if [ "$lat_json_first" == "true" ]; then
-                        lat_json_first=false
+                            LAT_LOG="$LOG_DIR/lat_${SRC}_${DEST}_${SRC_HCA}_${DEST_HCA}_size${LAT_SIZE}.log"
+                            run_latency_test "$SRC" "$DEST" "$SRC_HCA" "$DEST_HCA" "$PORT" "$LAT_SIZE" "$LAT_TEST_PORT" "$LAT_LOG" "$lat_json_first"
+                            if [ "$lat_json_first" == "true" ]; then
+                                lat_json_first=false
+                            fi
+
+                            # 给进程一些时间来完成和清理
+                            sleep 3
+                        fi
+
+                        # 带宽测试 - 只使用指定的大小
+                        if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]]; then
+                            # 为带宽测试使用不同的端口
+                            BW_TEST_PORT=$((BASE_PORT + 20))
+
+                            BW_LOG="$LOG_DIR/bw_${SRC}_${DEST}_${SRC_HCA}_${DEST_HCA}_size${BW_SIZE}.log"
+                            run_bandwidth_test "$SRC" "$DEST" "$SRC_HCA" "$DEST_HCA" "$PORT" "$BW_SIZE" "$BW_TEST_PORT" "$BW_LOG" "$bw_json_first"
+                            if [ "$bw_json_first" == "true" ]; then
+                                bw_json_first=false
+                            fi
+
+                            # 给进程一些时间来完成和清理
+                            sleep 3
+                        fi
+                    done
+                done
+            else
+                # 原始的非交叉测试模式 - 每个主机上相同的HCA相互测试
+                for HCA in "${HCAS[@]}"; do
+                    echo -e "\n${BOLD}[HCA]${NC} 测试 $HCA 网卡 (端口 $PORT)"
+
+                    # 延迟测试 - 只使用指定的大小
+                    if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
+                        # 为每个HCA使用不同的端口以避免冲突
+                        LAT_TEST_PORT=$((BASE_PORT + 10))
+
+                        LAT_LOG="$LOG_DIR/lat_${SRC}_${DEST}_${HCA}_size${LAT_SIZE}.log"
+                        run_latency_test "$SRC" "$DEST" "$HCA" "$HCA" "$PORT" "$LAT_SIZE" "$LAT_TEST_PORT" "$LAT_LOG" "$lat_json_first"
+                        if [ "$lat_json_first" == "true" ]; then
+                            lat_json_first=false
+                        fi
+
+                        # 给进程一些时间来完成和清理
+                        sleep 3
                     fi
 
-                    # 给进程一些时间来完成和清理
-                    sleep 3
-                fi
+                    # 带宽测试 - 只使用指定的大小
+                    if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]]; then
+                        # 为带宽测试使用不同的端口
+                        BW_TEST_PORT=$((BASE_PORT + 20))
 
-                # 带宽测试 - 只使用指定的大小
-                if [[ "$TEST_TYPE" == "bandwidth" || "$TEST_TYPE" == "all" ]]; then
-                    # 为带宽测试使用不同的端口
-                    BW_TEST_PORT=$((BASE_PORT + 20))
+                        BW_LOG="$LOG_DIR/bw_${SRC}_${DEST}_${HCA}_size${BW_SIZE}.log"
+                        run_bandwidth_test "$SRC" "$DEST" "$HCA" "$HCA" "$PORT" "$BW_SIZE" "$BW_TEST_PORT" "$BW_LOG" "$bw_json_first"
+                        if [ "$bw_json_first" == "true" ]; then
+                            bw_json_first=false
+                        fi
 
-                    BW_LOG="$LOG_DIR/bw_${SRC}_${DEST}_${HCA}_size${BW_SIZE}.log"
-                    run_bandwidth_test "$SRC" "$DEST" "$HCA" "$PORT" "$BW_SIZE" "$BW_TEST_PORT" "$BW_LOG" "$bw_json_first"
-                    if [ "$bw_json_first" == "true" ]; then
-                        bw_json_first=false
+                        # 给进程一些时间来完成和清理
+                        sleep 3
                     fi
 
-                    # 给进程一些时间来完成和清理
-                    sleep 3
-                fi
-
-                echo -e "${BLUE}[完成]${NC} $HCA 测试完成"
-            done
+                    echo -e "${BLUE}[完成]${NC} $HCA 测试完成"
+                done
+            fi
         done
 
         # 生成摘要报告
