@@ -1,6 +1,6 @@
 #!/bin/bash
 # 脚本名称: ibperf.sh
-# 描述: 使用sshpass进行InfiniBand网络性能测试，无需密钥认证
+# 描述: 使用sshpass进行InfiniBand网络性能测试，无需密钥认证，并提供路径查询功能
 
 # 默认参数
 HCA_LIST="mlx5_0,mlx5_1"
@@ -8,11 +8,12 @@ HOST_FILE="hostfile.txt"
 USER="root"
 PASSWORD="123456"
 LAT_SIZE="2"  # 默认延迟测试大小为2字节
-BW_SIZE="2097152"  # 默认带宽测试大小为2MB
+BW_SIZE="4194304"  # 默认带宽测试大小为4MB
 ITERATIONS=5000
 OUTPUT_FORMAT="human"  # 可选: human, csv, json
 TEST_TYPE="all"  # 可选: latency, bandwidth, all
 CROSS_HCA_TEST=false   # 默认不启用交叉测试
+ROUTE_QUERY=true       # 默认启用路径查询
 
 # 终端颜色定义
 RED='\033[0;31m'
@@ -31,11 +32,12 @@ show_help() {
     echo "  --user USER               SSH用户名 (默认: root)"
     echo "  --password PASSWORD       SSH密码 (默认: 123456)"
     echo "  --lat_size SIZE           延迟测试的消息大小，以字节为单位 (默认: 2)"
-    echo "  --bw_size SIZE            带宽测试的消息大小，以字节为单位 (默认: 2097152)"
+    echo "  --bw_size SIZE            带宽测试的消息大小，以字节为单位 (默认: 4194304)"
     echo "  --iterations N            每次测试的迭代次数 (默认: 5000)"
     echo "  --output FORMAT           输出格式: human, csv, json, all (默认: human)"
     echo "  --test_type TYPE          测试类型: latency, bandwidth, all (默认: all)"
     echo "  --cross_hca               启用交叉HCA测试 (默认: 不启用)"
+    echo "  --no_route_query          禁用路径查询功能 (默认: 启用)"
     echo "  --help                    显示此帮助信息"
     exit 0
 }
@@ -81,6 +83,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --cross_hca)
             CROSS_HCA_TEST=true
+            shift
+            ;;
+        --no_route_query)
+            ROUTE_QUERY=false
             shift
             ;;
         --help)
@@ -150,6 +156,7 @@ LAT_CSV="$LOG_DIR/latency_summary.csv"
 BW_CSV="$LOG_DIR/bandwidth_summary.csv"
 LAT_JSON="$LOG_DIR/latency_summary.json"
 BW_JSON="$LOG_DIR/bandwidth_summary.json"
+ROUTE_LOG="$LOG_DIR/route_summary.log"
 
 # 初始化CSV和JSON文件
 if [[ "$TEST_TYPE" == "latency" || "$TEST_TYPE" == "all" ]]; then
@@ -175,6 +182,7 @@ fi
 # 存储测试结果的数组
 declare -a LAT_RESULTS
 declare -a BW_RESULTS
+declare -a ROUTE_RESULTS
 
 # 初始化摘要文件
 {
@@ -199,6 +207,153 @@ test_ssh_connection() {
     fi
     return 0
 }
+
+# 运行路径查询并解析结果
+# 从测试日志中提取LID并运行路径查询
+# 从测试日志中提取LID并运行路径查询，如果失败则尝试使用ibaddr获取LID
+# 完全重写的路径查询函数
+# 使用直接命令字符串的路径查询函数
+query_route() {
+    local src="$1"
+    local dest="$2"
+    local src_hca="$3"
+    local dest_hca="$4"
+    local test_log="$5"    # 测试日志文件，可能包含LID信息
+    local route_log_file="$6"
+
+    echo -e "${BLUE}[路径查询]${NC} 查询路径 ${src}:${src_hca} -> ${dest}:${dest_hca}"
+
+    # 首先检查是否可以使用ibtracert
+    if ! ssh_cmd "$src" "command -v ibtracert" &>/dev/null; then
+        echo -e "${YELLOW}警告:${NC} 在 $src 上找不到 ibtracert 命令，跳过路径查询"
+        return 1
+    fi
+
+    # 尝试方法1：从测试日志中提取源和目标LID
+    local src_lid_hex=$(grep "local address:" "$test_log" 2>/dev/null | awk '{print $4}')
+    local dest_lid_hex=$(grep "remote address:" "$test_log" 2>/dev/null | awk '{print $4}')
+
+    # 如果从日志中提取失败，尝试方法2：直接使用ibaddr命令获取LID
+    if [[ -z "$src_lid_hex" || -z "$dest_lid_hex" ]]; then
+        echo -e "${YELLOW}[信息]${NC} 无法从测试日志中提取LID信息，尝试使用ibaddr命令获取"
+
+        # 获取源和目标主机的LID（十六进制格式）
+        src_lid_hex=$(ssh_cmd "$src" "ibaddr -L $src_hca | awk '{print \$3}'" 2>/dev/null)
+        dest_lid_hex=$(ssh_cmd "$dest" "ibaddr -L $dest_hca | awk '{print \$3}'" 2>/dev/null)
+
+        # 确保获取到的LID是十六进制格式（如果不是，添加0x前缀）
+        if [[ -n "$src_lid_hex" && ! "$src_lid_hex" == 0x* ]]; then
+            src_lid_hex="0x$src_lid_hex"
+        fi
+
+        if [[ -n "$dest_lid_hex" && ! "$dest_lid_hex" == 0x* ]]; then
+            dest_lid_hex="0x$dest_lid_hex"
+        fi
+    fi
+
+    # 再次检查是否成功获取了LID
+    if [[ -z "$src_lid_hex" || -z "$dest_lid_hex" ]]; then
+        echo -e "${YELLOW}警告:${NC} 无法获取LID信息，跳过路径查询"
+        return 1
+    fi
+
+    #echo -e "${BLUE}[信息]${NC} 使用LID: 源=${src_lid_hex}, 目标=${dest_lid_hex}"
+
+    # 构建完整的命令字符串
+    local cmd_str="ibtracert ${src_lid_hex} ${dest_lid_hex}"
+    #echo -e "${BLUE}[执行]${NC} $cmd_str"
+
+    # 执行命令并将结果保存到临时文件
+    local trace_output=$(ssh_cmd "$src" "$cmd_str" 2>&1)
+    local cmd_status=$?
+
+    # 将命令输出保存到日志文件
+    echo "命令: $cmd_str" > "$route_log_file"
+    echo "$trace_output" >> "$route_log_file"
+
+    # 检查命令是否成功
+    if [ $cmd_status -ne 0 ]; then
+        echo -e "${RED}错误:${NC} 执行ibtracert命令失败，查看详细错误:"
+        echo "$trace_output"
+        return 1
+    fi
+
+    # 使用awk处理ibtracert的输出
+    local route_output=$(echo "$trace_output" | awk '
+    # 跳过 To ca 行，只处理 From ca 和跳转信息
+    /^From ca/ {
+        if (match($0, /lid ([0-9]+-[0-9]+) "([^"]+)"/, arr)) {
+            src_lid = substr(arr[1], 1, index(arr[1], "-") - 1);
+            src_name = arr[2];
+        }
+    }
+
+    # 收集所有路径跳转行
+    /^\[[0-9]+\] ->/ {
+        hops[hop_count++] = $0;
+    }
+
+    END {
+        # 提取第一个端口
+        if (hop_count > 0 && match(hops[0], /^\[([0-9]+)\]/, port)) {
+            result = src_lid " " src_name " [" port[1] "]";
+        } else {
+            result = "无法解析路径";
+            exit;
+        }
+
+        # 处理所有中间跳
+        for (i = 0; i < hop_count; i++) {
+            # 最后一跳特殊处理
+            if (i == hop_count - 1 && hops[i] ~ /-> ca port/) {
+                if (match(hops[i], /^\[([0-9]+)\] -> ca port [^{]*{[^}]*}\[([0-9]+)\] lid ([0-9]+-[0-9]+) "([^"]+)"/, last)) {
+                    last_out_port = last[1];
+                    last_in_port = last[2];
+                    last_lid = substr(last[3], 1, index(last[3], "-") - 1);
+                    last_name = last[4];
+
+                    result = result " [" last_out_port "]->[" last_in_port "] " last_lid " " last_name;
+                }
+            }
+            # 处理中间跳
+            else if (match(hops[i], /-> [^ ]+ port [^{]*{[^}]*}\[([0-9]+)\] lid ([0-9]+-[0-9]+) "([^"]+)"/, hop)) {
+                out_port = hop[1];
+                next_lid = substr(hop[2], 1, index(hop[2], "-") - 1);
+                next_name = hop[3];
+
+                result = result " -> [" out_port "] " next_lid " " next_name;
+
+                # 如果下一跳不是最后一跳，添加入端口
+                if (i < hop_count - 1 && !(hops[i+1] ~ /-> ca port/)) {
+                    if (match(hops[i+1], /^\[([0-9]+)\]/, next_in)) {
+                        result = result " [" next_in[1] "]";
+                    }
+                }
+            }
+        }
+
+        # 移除所有引号
+        gsub(/"/, "", result);
+
+        print result;
+    }')
+
+    # 记录解析结果到日志文件
+    echo "解析后的路径: $route_output" >> "$route_log_file"
+
+    # 添加到路径结果数组
+    if [ -n "$route_output" ]; then
+        ROUTE_RESULTS+=("$src|$dest|$src_hca|$dest_hca|$route_output")
+    else
+        echo -e "${YELLOW}警告:${NC} 解析ibtracert输出失败，无法获取路径信息"
+        ROUTE_RESULTS+=("$src|$dest|$src_hca|$dest_hca|路径解析失败")
+    fi
+
+    # 返回路径查询输出
+    echo "$route_output"
+    return 0
+}
+
 
 # 运行延迟测试
 run_latency_test() {
@@ -249,6 +404,8 @@ run_latency_test() {
             echo "#bytes     #iterations    t_min[usec]      t_max[usec]    t_avg[usec]      t_stdev[usec]"
             printf "%-10s %-15s %-16s %-15s %-16s %-15s\n" "$size" "$ITERATIONS" "$min_lat" "$max_lat" "$avg_lat" "$stdev"
             echo "---------------------------------------------------------------------------------------"
+
+            # 如果启用了路径查询，则执行路径查询
 
             # 添加到延迟结果数组
             LAT_RESULTS+=("$src|$dest|$src_hca|$dest_hca|$size|$min_lat|$max_lat|$avg_lat|$stdev")
@@ -341,6 +498,20 @@ run_bandwidth_test() {
             echo "$result_line"
             echo "---------------------------------------------------------------------------------------"
 
+            # 如果启用了路径查询，则执行路径查询
+            # 如果启用了路径查询，则执行路径查询
+            # 如果启用了路径查询，则执行路径查询
+            # 如果启用了路径查询，则执行路径查询
+            if [ "$ROUTE_QUERY" == "true" ]; then
+                local route_log_file="$LOG_DIR/route_${src}_${dest}_${src_hca}_${dest_hca}_lat.log"
+                local route_result=$(query_route "$src" "$dest" "$src_hca" "$dest_hca" "$log_file" "$route_log_file")
+
+                if [ -n "$route_result" ]; then
+                    echo -e "${GREEN}[路径]${NC} $route_result"
+                    echo "---------------------------------------------------------------------------------------"
+                fi
+            fi
+
             # 计算MB大小进行显示
             local size_mb=$(echo "scale=2; $size/1048576" | bc)
 
@@ -389,6 +560,17 @@ EOF
                 echo "#bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]"
                 echo "$any_num_line"
                 echo "---------------------------------------------------------------------------------------"
+
+                # 如果启用了路径查询，则执行路径查询
+                if [ "$ROUTE_QUERY" == "true" ]; then
+                    local route_log_file="$LOG_DIR/route_${src}_${dest}_${src_hca}_${dest_hca}_bw.log"
+                    local route_result=$(query_route "$src" "$dest" "$src_hca" "$dest_hca" "$route_log_file")
+
+                    if [ -n "$route_result" ]; then
+                        echo -e "${GREEN}[路径]${NC} $route_result"
+                        echo "---------------------------------------------------------------------------------------"
+                    fi
+                fi
 
                 # 计算MB大小
                 local size_mb=$(echo "scale=2; $size/1048576" | bc)
@@ -472,6 +654,30 @@ generate_summary() {
         } >> "$SUMMARY_TXT"
     fi
 
+    # 打印路径查询结果表格（如果启用）
+    if [ "$ROUTE_QUERY" == "true" ] && [ ${#ROUTE_RESULTS[@]} -gt 0 ]; then
+        {
+            echo ""
+            echo "┌───────────────────────────────────── 路径查询结果 ──────────────────────────────────────────┐"
+            echo "│ 源主机        目标主机       源HCA  目标HCA  路径                                           │"
+            echo "├─────────────────────────────────────────────────────────────────────────────────────────────┤"
+
+            for result in "${ROUTE_RESULTS[@]}"; do
+                IFS='|' read -r src dest src_hca dest_hca route_path <<< "$result"
+                # 将路径截断以适应固定宽度表格
+                local max_path_len=70
+                local path_display="$route_path"
+                if [ ${#route_path} -gt $max_path_len ]; then
+                    path_display="${route_path:0:$max_path_len-3}..."
+                fi
+                printf "│ %-13s %-13s %-7s %-7s %-71s │\n" \
+                    "$src" "$dest" "$src_hca" "$dest_hca" "$path_display"
+            done
+
+            echo "└─────────────────────────────────────────────────────────────────────────────────────────────┘"
+        } >> "$SUMMARY_TXT"
+    fi
+
     # 添加测试完成时间
     echo "" >> "$SUMMARY_TXT"
     echo "测试完成时间: $(date +"%Y-%m-%d %H:%M:%S")" >> "$SUMMARY_TXT"
@@ -494,6 +700,7 @@ run_tests() {
         echo "  测试类型: $TEST_TYPE"
         echo "  输出格式: $OUTPUT_FORMAT"
         echo "  交叉HCA测试: $([ "$CROSS_HCA_TEST" == "true" ] && echo "启用" || echo "不启用")"
+        echo "  路径查询: $([ "$ROUTE_QUERY" == "true" ] && echo "启用" || echo "不启用")"
         echo "========================================="
 
         # 循环遍历主机对
@@ -621,6 +828,10 @@ run_tests() {
             if [[ "$OUTPUT_FORMAT" == "json" || "$OUTPUT_FORMAT" == "all" ]]; then
                 echo -e "${BOLD}带宽测试 JSON 摘要:${NC} $BW_JSON"
             fi
+        fi
+
+        if [ "$ROUTE_QUERY" == "true" ]; then
+            echo -e "${BOLD}路径查询日志:${NC} $ROUTE_LOG"
         fi
 
         # 显示摘要内容
